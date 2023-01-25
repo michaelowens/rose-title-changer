@@ -1,10 +1,11 @@
 use skidscan::Signature;
 use std::mem;
 use std::str::FromStr;
+use widestring::U16String;
 use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{BOOL, LPARAM};
 use winapi::shared::windef::HWND;
-use winapi::um::winuser::EnumWindows;
+use winapi::um::winuser::{EnumWindows, SendMessageW, WM_SETTEXT};
 
 use crate::process_memory::WindowsProcess;
 
@@ -51,6 +52,17 @@ pub fn sig_scan(
     }
 
     None
+}
+
+pub fn window_set_title(hwnd: HWND, title: &str) {
+    if hwnd.is_null() {
+        return;
+    }
+
+    let title = U16String::from(title) + "\0";
+    unsafe {
+        SendMessageW(hwnd, WM_SETTEXT, 0, title.as_ptr() as LPARAM);
+    }
 }
 
 pub fn enumerate_windows<F>(mut callback: F)

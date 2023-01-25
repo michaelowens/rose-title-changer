@@ -11,7 +11,7 @@ use std::thread;
 use sysinfo::{PidExt, ProcessExt, System, SystemExt};
 use widestring::U16String;
 use winapi::shared::minwindef::LPARAM;
-use winapi::shared::windef::HWND__;
+use winapi::shared::windef::{HWND, HWND__};
 use winapi::um::winuser::{
     GetWindowThreadProcessId, SendMessageW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
 };
@@ -82,6 +82,7 @@ struct MyApp {
 impl MyApp {
     fn new(cc: &eframe::CreationContext) -> Self {
         configure_text_styles(&cc.egui_ctx);
+        // TODO: find a better way than wrapping everything in Arc/Mutex
         Self {
             show_username: Arc::new(Mutex::new(true)),
             show_job: Arc::new(Mutex::new(true)),
@@ -166,25 +167,16 @@ impl MyApp {
                 process.pid,
                 Game {
                     pid: process.pid,
-                    signature_address: signature_address,
-                    player_address: player_address,
-                    window_handle: window_handle,
+                    signature_address,
+                    player_address,
+                    window_handle,
                     title: "".into(),
                 },
             );
         }
 
-        // Clear windows that have been closed
-        let mut pids_to_remove: Vec<u32> = vec![];
-        for pid in games.keys() {
-            if !found_pids.contains(pid) {
-                pids_to_remove.push(pid.to_owned());
-            }
-        }
-
-        for pid in pids_to_remove {
-            games.remove(&pid);
-        }
+        // Remove windows that have been closed
+        games.retain(|&k, _| found_pids.contains(&k));
 
         drop(system);
         drop(games);
@@ -226,17 +218,7 @@ impl MyApp {
 
             game.title = title_parts.join(" - ");
 
-            if game.window_handle > 0 {
-                let title = U16String::from(game.title.to_string()) + "\0";
-                unsafe {
-                    SendMessageW(
-                        game.window_handle as *mut HWND__,
-                        WM_SETTEXT,
-                        0,
-                        title.as_ptr() as LPARAM,
-                    );
-                }
-            }
+            window_set_title(game.window_handle as HWND, &game.title);
         }
     }
 
@@ -425,6 +407,7 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Debug UI
         let mut show_debug = self.show_debug.lock().unwrap();
         if *show_debug {
             egui::TopBottomPanel::bottom("debug_bottom")
@@ -467,6 +450,7 @@ impl eframe::App for MyApp {
         }
         drop(show_debug);
 
+        // Main UI
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                 ui.heading(RichText::new("ROSE Title Changer").strong());
@@ -482,7 +466,10 @@ impl eframe::App for MyApp {
             ui.add_space(10.0);
 
             let mut show_username = self.show_username.lock().unwrap();
-            if ui.checkbox(&mut show_username, "Show username").changed() {
+            if ui
+                .checkbox(&mut show_username, "Show character name")
+                .changed()
+            {
                 drop(show_username);
                 self.set_titles();
             } else {
@@ -503,7 +490,6 @@ impl eframe::App for MyApp {
             use egui_extras::{Column, TableBuilder};
             TableBuilder::new(ui)
                 .striped(true)
-                .vscroll(true)
                 .column(Column::auto().resizable(true).at_least(60.0))
                 .column(Column::remainder())
                 .header(24.0, |mut header| {
