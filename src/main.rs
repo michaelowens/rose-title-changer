@@ -6,26 +6,31 @@ use eframe::egui::{self, RichText, TextEdit, TextStyle};
 use eframe::epaint::{FontFamily, FontId};
 use eframe::Theme;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use sysinfo::{PidExt, ProcessExt, System, SystemExt};
+use tray_item::TrayItem;
 use widestring::U16String;
 use winapi::shared::minwindef::LPARAM;
 use winapi::shared::windef::{HWND, HWND__};
 use winapi::um::winuser::{
     GetWindowThreadProcessId, SendMessageW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
 };
+use windows_api::load_app_icon;
 
 mod helpers;
 mod process_memory;
+mod windows_api;
 use crate::helpers::*;
 
 fn main() {
+    let icon_data = load_app_icon();
     let options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(320.0, 240.0)),
         resizable: false,
         follow_system_theme: false,
         default_theme: Theme::Dark,
+        icon_data: Some(icon_data),
         ..Default::default()
     };
     eframe::run_native(
@@ -33,6 +38,7 @@ fn main() {
         options.clone(),
         Box::new(|cc| {
             let mut app = MyApp::new(cc);
+            app.init_tray(&cc.egui_ctx);
             app.start_timer(&cc.egui_ctx);
             Box::new(app)
         }),
@@ -69,8 +75,16 @@ struct Game {
     title: String,
 }
 
+enum TrayMessage {
+    Show,
+    Quit,
+}
+
 #[derive(Clone)]
 struct MyApp {
+    app_is_hidden: Arc<Mutex<bool>>,
+    new_hidden_state: Arc<Mutex<bool>>,
+    quit_app: Arc<Mutex<bool>>,
     show_username: Arc<Mutex<bool>>,
     show_job: Arc<Mutex<bool>>,
     system: Arc<Mutex<System>>,
@@ -84,6 +98,9 @@ impl MyApp {
         configure_text_styles(&cc.egui_ctx);
         // TODO: find a better way than wrapping everything in Arc/Mutex
         Self {
+            app_is_hidden: Arc::new(Mutex::new(false)),
+            new_hidden_state: Arc::new(Mutex::new(false)),
+            quit_app: Arc::new(Mutex::new(false)),
             show_username: Arc::new(Mutex::new(true)),
             show_job: Arc::new(Mutex::new(true)),
             system: Arc::new(Mutex::new(sysinfo::System::new())),
@@ -91,6 +108,36 @@ impl MyApp {
             show_debug: Arc::new(Mutex::new(false)),
             debug_text: Arc::new(Mutex::new("".into())),
         }
+    }
+
+    fn init_tray(&mut self, ectx: &egui::Context) {
+        let me = self.clone();
+        let ctx = ectx.clone();
+        thread::spawn(move || loop {
+            let mut tray = TrayItem::new("ROSE Title Changer", "tray-icon").unwrap();
+
+            let (tx, rx) = mpsc::channel();
+
+            {
+                let tx = tx.clone();
+                tray.add_menu_item("Show", move || tx.send(TrayMessage::Show).unwrap())
+                    .unwrap();
+            }
+            {
+                let tx = tx.clone();
+                tray.add_menu_item("Quit", move || tx.send(TrayMessage::Quit).unwrap())
+                    .unwrap();
+            }
+
+            loop {
+                match rx.recv() {
+                    Ok(TrayMessage::Show) => *me.new_hidden_state.lock().unwrap() = false,
+                    Ok(TrayMessage::Quit) => *me.quit_app.lock().unwrap() = true,
+                    _ => {}
+                }
+                ctx.request_repaint()
+            }
+        });
     }
 
     fn start_timer(&mut self, ectx: &egui::Context) {
@@ -406,49 +453,81 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Debug UI
-        let mut show_debug = self.show_debug.lock().unwrap();
-        if *show_debug {
-            egui::TopBottomPanel::bottom("debug_bottom")
-                .exact_height(34.0)
-                .frame(egui::Frame {
-                    inner_margin: egui::style::Margin::same(8.0),
-                    outer_margin: egui::style::Margin::same(0.0),
-                    rounding: eframe::epaint::Rounding::none(),
-                    shadow: eframe::epaint::Shadow::NONE,
-                    fill: eframe::epaint::Color32::from_rgb(20, 20, 20),
-                    stroke: eframe::epaint::Stroke::default(),
-                })
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("Copy to clipboard").clicked() {
-                            let debug_text = self.debug_text.lock().unwrap();
-                            ui.output().copied_text = (&*debug_text).to_string();
-                            drop(debug_text);
-                        }
+    fn on_close_event(&mut self) -> bool {
+        let mut new_hidden_state = self.new_hidden_state.lock().unwrap();
+        *new_hidden_state = true;
+        *self.quit_app.lock().unwrap()
+    }
 
-                        if ui.button("Close").clicked() {
-                            *show_debug = false;
-                        }
-                    })
-                });
-
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut debug_text = self.debug_text.lock().unwrap();
-                    ui.add(
-                        TextEdit::multiline(&mut *debug_text)
-                            .code_editor()
-                            .desired_rows(4),
-                    );
-                    drop(debug_text);
-                });
-            });
-            drop(show_debug);
-            return;
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Quit app
+        {
+            let quit_app = self.quit_app.lock().unwrap();
+            if *quit_app {
+                frame.close();
+                return;
+            }
         }
-        drop(show_debug);
+        // Hidden in tray
+        {
+            let mut app_is_hidden = self.app_is_hidden.lock().unwrap();
+            let new_hidden_state = self.new_hidden_state.lock().unwrap();
+            if *new_hidden_state != *app_is_hidden {
+                *app_is_hidden = *new_hidden_state;
+                let mut is_visible = true;
+                if *app_is_hidden {
+                    is_visible = false;
+                }
+                frame.set_visible(is_visible);
+            }
+
+            if *app_is_hidden {
+                return;
+            }
+        }
+
+        // Debug UI
+        {
+            let mut show_debug = self.show_debug.lock().unwrap();
+            if *show_debug {
+                egui::TopBottomPanel::bottom("debug_bottom")
+                    .exact_height(34.0)
+                    .frame(egui::Frame {
+                        inner_margin: egui::style::Margin::same(8.0),
+                        outer_margin: egui::style::Margin::same(0.0),
+                        rounding: eframe::epaint::Rounding::none(),
+                        shadow: eframe::epaint::Shadow::NONE,
+                        fill: eframe::epaint::Color32::from_rgb(20, 20, 20),
+                        stroke: eframe::epaint::Stroke::default(),
+                    })
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("Copy to clipboard").clicked() {
+                                let debug_text = self.debug_text.lock().unwrap();
+                                ui.output().copied_text = (&*debug_text).to_string();
+                                drop(debug_text);
+                            }
+
+                            if ui.button("Close").clicked() {
+                                *show_debug = false;
+                            }
+                        })
+                    });
+
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut debug_text = self.debug_text.lock().unwrap();
+                        ui.add(
+                            TextEdit::multiline(&mut *debug_text)
+                                .code_editor()
+                                .desired_rows(4),
+                        );
+                        drop(debug_text);
+                    });
+                });
+                return;
+            }
+        }
 
         // Main UI
         egui::CentralPanel::default().show(ctx, |ui| {
