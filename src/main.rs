@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use chrono::{DateTime, Utc};
 use core::time;
 use eframe::egui::{self, RichText, TextEdit, TextStyle};
 use eframe::epaint::{FontFamily, FontId};
@@ -10,12 +9,6 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use sysinfo::{PidExt, ProcessExt, System, SystemExt};
 use tray_item::TrayItem;
-use widestring::U16String;
-use winapi::shared::minwindef::LPARAM;
-use winapi::shared::windef::{HWND, HWND__};
-use winapi::um::winuser::{
-    GetWindowThreadProcessId, SendMessageW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
-};
 use windows_api::load_app_icon;
 
 mod helpers;
@@ -71,7 +64,7 @@ struct Game {
     pid: u32,
     signature_address: usize,
     player_address: usize,
-    window_handle: usize,
+    window_handle: Option<usize>,
     title: String,
 }
 
@@ -195,20 +188,7 @@ impl MyApp {
                 }
             }
 
-            let mut window_process_id = 0;
-            let mut window_handle = 0;
-            enumerate_windows(|window| {
-                unsafe {
-                    GetWindowThreadProcessId(window, &mut window_process_id);
-                }
-
-                if window_process_id != process.pid {
-                    return true;
-                }
-
-                window_handle = window as usize;
-                return false;
-            });
+            let window_handle = find_process_window(process.pid);
 
             games.insert(
                 process.pid,
@@ -265,190 +245,17 @@ impl MyApp {
 
             game.title = title_parts.join(" - ");
 
-            window_set_title(game.window_handle as HWND, &game.title);
+            if let Some(window_handle) = game.window_handle {
+                windows_api::window_set_title(window_handle, &game.title);
+            }
         }
     }
 
     fn run_debug(&mut self) {
         let mut show_debug = self.show_debug.lock().unwrap();
         let mut debug_text = self.debug_text.lock().unwrap();
-        let mut system = self.system.lock().unwrap();
-
-        *debug_text = "".to_string();
-
-        /* #region Log some general information */
-        let now: DateTime<Utc> = Utc::now();
-        *debug_text += &format!("Date: {}\n", now);
-
-        let info = os_info::get();
-        *debug_text += &format!("OS: {}\n", info);
-        *debug_text += "\n";
-        /* #endregion */
-
-        /* #region test finding processes */
-        system.refresh_all(); //.refresh_processes();
-
-        let mut found_pids: Vec<u32> = vec![];
-        for proc in system.processes_by_exact_name("trose.exe") {
-            found_pids.push(proc.pid().as_u32());
-        }
-
-        if found_pids.is_empty() {
-            *debug_text += "No";
-        } else {
-            *debug_text += &found_pids.len().to_string();
-        }
-        *debug_text += " trose.exe processes found!";
-        *debug_text += "\nPIDs: ";
-        *debug_text += &found_pids
-            .iter()
-            .map(|u| u.to_string())
-            .collect::<Vec<String>>()
-            .join(",");
-        *debug_text += "\n";
-        *debug_text += "\n";
-        /* #endregion */
-
-        /* #region test opening processes */
-        for pid in found_pids {
-            *debug_text += &format!("[{}]\n", pid);
-            let maybe_process = process_memory::open_process(pid);
-            if maybe_process.is_none() {
-                *debug_text += "Failed to open process\n\n";
-                continue;
-            }
-            *debug_text += "Successfully opened process\n";
-
-            let process = maybe_process.unwrap();
-
-            let maybe_module = process.get_module_begin_end("trose.exe");
-            // let maybe_module = self.get_module_begin_end(pid, process.handle, "trose.exe");
-            if maybe_module.is_none() {
-                *debug_text += "Failed to find module begin and end\n\n";
-                continue;
-            }
-            *debug_text += "Successfully found module begin and end\n";
-
-            let (base_address, module_end) = maybe_module.unwrap();
-            *debug_text += &format!("Module begin: {:#x}\n", base_address);
-            *debug_text += &format!("Module end:   {:#x}\n", module_end);
-
-            let signature = "? 83 EC 28 ? 8B 05 75 E5 FF 00 ? 85 C0 ? 24 ? 38 6B 00 00 ? 73 14 F4 FF ? 89 44 24 30 ? 85 C0";
-            let signature_address =
-                sig_scan(&process, signature, base_address, module_end).unwrap_or(0);
-
-            if signature_address == 0 {
-                *debug_text += "Failed to find function signature\n\n";
-                continue;
-            }
-            *debug_text += &format!(
-                "Successfully found function signature: {:#x}\n",
-                signature_address
-            );
-
-            let player_location_addr_offset =
-                process.read_u32(signature_address + 0x07).unwrap_or(0) as usize;
-            if player_location_addr_offset == 0 {
-                *debug_text += "Failed to read player location address\n\n";
-                continue;
-            }
-            *debug_text += &format!(
-                "Successfully found player address location offset: {:#x}\n",
-                player_location_addr_offset
-            );
-
-            let player_location_addr = signature_address + player_location_addr_offset + 11;
-            *debug_text += &format!("Player address location: {:#x}\n", player_location_addr);
-
-            let player_address =
-                process.read_u64(player_location_addr as usize).unwrap_or(0) as usize;
-            if player_address == 0 {
-                *debug_text += "Failed to read player address\n\n";
-                continue;
-            }
-            *debug_text += &format!("Successfully found player address: {:#x}\n", player_address);
-
-            let mut window_process_id = 0;
-            let mut window_handle = 0;
-            enumerate_windows(|window| {
-                unsafe {
-                    GetWindowThreadProcessId(window, &mut window_process_id);
-                }
-
-                if window_process_id != process.pid {
-                    return true;
-                }
-
-                window_handle = window as usize;
-                return false;
-            });
-
-            if window_handle == 0 {
-                *debug_text += "Failed to find process window\n\n";
-                continue;
-            }
-            *debug_text += "Found process window handle\n";
-
-            let player_name = process
-                .read_string(player_address + 0x0B10)
-                .unwrap_or_default();
-            let player_job_id = process
-                .read_u32(player_address + 0x3B1A)
-                .unwrap_or_default();
-
-            *debug_text += &format!("Player name: {}\n", player_name);
-            *debug_text += &format!(
-                "Player job: {} ({})\n",
-                player_job_id,
-                job_id_to_name(player_job_id)
-            );
-
-            // try to fetch original title to revert
-            let original_title;
-            unsafe {
-                let text_length =
-                    SendMessageW(window_handle as *mut HWND__, WM_GETTEXTLENGTH, 0, 0) + 1;
-                let mut text_buffer = Vec::<u16>::with_capacity(text_length as usize);
-
-                SendMessageW(
-                    window_handle as *mut HWND__,
-                    WM_GETTEXT,
-                    text_length as usize,
-                    text_buffer.as_mut_ptr() as LPARAM,
-                );
-
-                original_title = String::from_utf16_lossy(&text_buffer);
-            }
-
-            let title = U16String::from("debug title") + "\0";
-            let send_message_result;
-            unsafe {
-                send_message_result = SendMessageW(
-                    window_handle as *mut HWND__,
-                    WM_SETTEXT,
-                    0,
-                    title.as_ptr() as LPARAM,
-                );
-            }
-            *debug_text += &format!(
-                "Tried changing window title, result: {}\n",
-                send_message_result
-            );
-            unsafe {
-                SendMessageW(
-                    window_handle as *mut HWND__,
-                    WM_SETTEXT,
-                    0,
-                    U16String::from(original_title).as_ptr() as LPARAM,
-                );
-            }
-        }
-        /* #endregion */
-
+        *debug_text = get_debug_info();
         *show_debug = true;
-        drop(debug_text);
-        drop(show_debug);
-        drop(system);
     }
 }
 

@@ -1,7 +1,13 @@
+use std::mem;
+
 use eframe::IconData;
 use widestring::U16String;
+use winapi::ctypes::c_void;
+use winapi::shared::minwindef::BOOL;
+use winapi::shared::minwindef::LPARAM;
 use winapi::shared::windef::HDC;
 use winapi::shared::windef::HICON;
+use winapi::shared::windef::HWND;
 use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::wingdi::CreateCompatibleDC;
 use winapi::um::wingdi::DeleteDC;
@@ -13,11 +19,17 @@ use winapi::um::wingdi::BITMAPINFO;
 use winapi::um::wingdi::BITMAPINFOHEADER;
 use winapi::um::wingdi::BI_RGB;
 use winapi::um::wingdi::DIB_RGB_COLORS;
+use winapi::um::winuser::EnumWindows;
 use winapi::um::winuser::GetIconInfo;
+use winapi::um::winuser::GetWindowThreadProcessId;
 use winapi::um::winuser::LoadImageW;
+use winapi::um::winuser::SendMessageW;
 use winapi::um::winuser::ICONINFO;
 use winapi::um::winuser::IMAGE_ICON;
 use winapi::um::winuser::LR_DEFAULTCOLOR;
+use winapi::um::winuser::WM_GETTEXT;
+use winapi::um::winuser::WM_GETTEXTLENGTH;
+use winapi::um::winuser::WM_SETTEXT;
 
 // Grab the icon from the exe and hand it over to egui
 pub fn load_app_icon() -> IconData {
@@ -112,5 +124,65 @@ pub fn load_app_icon() -> IconData {
         rgba: buffer,
         width,
         height,
+    }
+}
+
+pub fn window_get_title(hwnd: usize) -> String {
+    let text_length = unsafe { SendMessageW(hwnd as HWND, WM_GETTEXTLENGTH, 0, 0) + 1 };
+    let mut text_buffer = Vec::<u16>::with_capacity(text_length as usize);
+
+    unsafe {
+        SendMessageW(
+            hwnd as HWND,
+            WM_GETTEXT,
+            text_length as usize,
+            text_buffer.as_mut_ptr() as LPARAM,
+        );
+    }
+
+    String::from_utf16_lossy(&text_buffer)
+}
+
+pub fn window_set_title(hwnd: usize, title: &str) {
+    if hwnd == 0 {
+        return;
+    }
+
+    let title = U16String::from(title) + "\0";
+    unsafe {
+        SendMessageW(hwnd as HWND, WM_SETTEXT, 0, title.as_ptr() as LPARAM);
+    }
+}
+
+pub fn window_thread_process_id(hwnd: HWND) -> Option<u32> {
+    let mut window_process_id = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut window_process_id);
+    }
+
+    if window_process_id > 0 {
+        Some(window_process_id)
+    } else {
+        None
+    }
+}
+
+pub fn enumerate_windows<F>(mut callback: F)
+where
+    F: FnMut(HWND) -> bool,
+{
+    let mut trait_obj: &mut dyn FnMut(HWND) -> bool = &mut callback;
+    let closure_pointer_pointer: *mut c_void = unsafe { mem::transmute(&mut trait_obj) };
+
+    let lparam = closure_pointer_pointer as LPARAM;
+    unsafe { EnumWindows(Some(enumerate_callback), lparam) };
+}
+
+unsafe extern "system" fn enumerate_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let closure: &mut &mut dyn FnMut(HWND) -> bool = mem::transmute(lparam as *mut c_void);
+    if closure(hwnd) {
+        true.into()
+    } else {
+        false.into()
     }
 }
