@@ -138,6 +138,7 @@ impl MyApp {
         let ctx = ectx.clone();
         thread::spawn(move || loop {
             me.find_games();
+            me.set_titles();
             ctx.request_repaint();
             thread::sleep(time::Duration::from_secs(5));
         });
@@ -204,10 +205,6 @@ impl MyApp {
 
         // Remove windows that have been closed
         games.retain(|&k, _| found_pids.contains(&k));
-
-        drop(system);
-        drop(games);
-        self.set_titles();
     }
 
     fn set_titles(&mut self) {
@@ -231,17 +228,17 @@ impl MyApp {
                 .read_u32(game.player_address + 0x3B1A)
                 .unwrap_or_default();
 
-            let show_username = self.show_username.lock().unwrap();
-            let show_job = self.show_job.lock().unwrap();
-            if *show_username {
-                title_parts.push(player_name);
-            }
+            {
+                let show_username = self.show_username.lock().unwrap();
+                let show_job = self.show_job.lock().unwrap();
+                if *show_username {
+                    title_parts.push(player_name);
+                }
 
-            if *show_job {
-                title_parts.push(job_id_to_name(player_job_id));
+                if *show_job {
+                    title_parts.push(job_id_to_name(player_job_id));
+                }
             }
-            drop(show_username);
-            drop(show_job);
 
             game.title = title_parts.join(" - ");
 
@@ -312,7 +309,6 @@ impl eframe::App for MyApp {
                             if ui.button("Copy to clipboard").clicked() {
                                 let debug_text = self.debug_text.lock().unwrap();
                                 ui.output().copied_text = (&*debug_text).to_string();
-                                drop(debug_text);
                             }
 
                             if ui.button("Close").clicked() {
@@ -351,23 +347,25 @@ impl eframe::App for MyApp {
             });
             ui.add_space(10.0);
 
-            let mut show_username = self.show_username.lock().unwrap();
-            if ui
-                .checkbox(&mut show_username, "Show character name")
-                .changed()
             {
-                drop(show_username);
-                self.set_titles();
-            } else {
-                drop(show_username);
+                let mut show_username = self.show_username.lock().unwrap();
+                if ui
+                    .checkbox(&mut show_username, "Show character name")
+                    .changed()
+                {
+                    drop(show_username);
+                    self.set_titles();
+                }
             }
-            let mut show_job = self.show_job.lock().unwrap();
-            if ui.checkbox(&mut show_job, "Show job").changed() {
-                drop(show_job);
-                self.set_titles();
-            } else {
-                drop(show_job);
+
+            {
+                let mut show_job = self.show_job.lock().unwrap();
+                if ui.checkbox(&mut show_job, "Show job").changed() {
+                    drop(show_job);
+                    self.set_titles();
+                }
             }
+
             ui.add_space(10.0);
 
             ui.label("Detected windows");
