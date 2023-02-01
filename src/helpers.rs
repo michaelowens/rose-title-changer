@@ -71,7 +71,7 @@ pub fn find_process_window(pid: u32) -> Option<usize> {
     maybe_window_handle
 }
 
-pub fn get_debug_info() -> String {
+pub fn get_debug_info(signature: &str) -> String {
     let mut debug_text = String::from("");
 
     /* #region Log some general information */
@@ -132,7 +132,6 @@ pub fn get_debug_info() -> String {
         debug_text += &format!("Module begin: {:#x}\n", base_address);
         debug_text += &format!("Module end:   {:#x}\n", module_end);
 
-        let signature = "? 83 EC 28 ? 8B 05 75 E5 FF 00 ? 85 C0 ? 24 ? 38 6B 00 00 ? 73 14 F4 FF ? 89 44 24 30 ? 85 C0";
         let signature_address =
             sig_scan(&process, signature, base_address, module_end).unwrap_or(0);
 

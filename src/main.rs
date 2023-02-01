@@ -84,6 +84,7 @@ struct MyApp {
     games: Arc<Mutex<HashMap<u32, Game>>>,
     show_debug: Arc<Mutex<bool>>,
     debug_text: Arc<Mutex<String>>,
+    signature: Arc<Mutex<String>>,
 }
 
 impl MyApp {
@@ -100,6 +101,7 @@ impl MyApp {
             games: Arc::new(Mutex::new(HashMap::new())),
             show_debug: Arc::new(Mutex::new(false)),
             debug_text: Arc::new(Mutex::new("".into())),
+            signature: Arc::new(Mutex::new("? 83 EC 28 ? 8B 05 ? ? ? ? ? 85 C0 ? 24 ? 38 6B 00 00 ? ? ? ? ? ? 89 44 24 30 ? 85 C0".into())),
         }
     }
 
@@ -172,9 +174,9 @@ impl MyApp {
                     continue;
                 }
                 let (base_address, module_end) = maybe_module.unwrap();
-                let signature = "? 83 EC 28 ? 8B 05 75 E5 FF 00 ? 85 C0 ? 24 ? 38 6B 00 00 ? 73 14 F4 FF ? 89 44 24 30 ? 85 C0";
+                let signature = self.signature.lock().unwrap();
                 signature_address =
-                    sig_scan(&process, signature, base_address, module_end).unwrap_or(0);
+                    sig_scan(&process, &(*signature), base_address, module_end).unwrap_or(0);
             }
 
             let mut player_address = 0;
@@ -251,7 +253,7 @@ impl MyApp {
     fn run_debug(&mut self) {
         let mut show_debug = self.show_debug.lock().unwrap();
         let mut debug_text = self.debug_text.lock().unwrap();
-        *debug_text = get_debug_info();
+        *debug_text = get_debug_info(&(*self.signature.lock().unwrap()));
         *show_debug = true;
     }
 }
@@ -346,6 +348,11 @@ impl eframe::App for MyApp {
                 });
             });
             ui.add_space(10.0);
+
+            /*{
+                let mut signature = self.signature.lock().unwrap();
+                ui.text_edit_singleline(&mut *signature);
+            }*/
 
             {
                 let mut show_username = self.show_username.lock().unwrap();
